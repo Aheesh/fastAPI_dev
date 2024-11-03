@@ -120,14 +120,8 @@ async def create_consent_request(item: Customer):
 
 
 # Post request to fetch the consent id using the consent handle from /proxy/v2/Consent/handle
-# here is the sample payload {
-    #     "ver": "2.0.0",
-    #     "timestamp": "2023-06-26T11:39:57.153Z",
-    #     "txnid": "795038d3-86fb-4d3a-a681-2d39e8f4fc3c8787878",
-    #     "ConsentHandle": "39e108fe-9243-11e8-b9f2-0256d88"
-    # }
-    # Where consent handle is received from the consent request API. Authorization is done using the bearer token and the signature
-    # the function should return the consent handle, consent id and consent status
+# Consent handle is received from the consent request API. Authorization is done using the bearer token and signature
+# function returns the consent handle, consent id and consent status
     
 
 @app.post("/ConsentID")
