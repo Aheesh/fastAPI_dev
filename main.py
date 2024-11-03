@@ -20,7 +20,7 @@ class Customer(BaseModel):
 app = FastAPI()
 
 
-@app.post("/consent")
+@app.post("/ConsentRequest")
 async def create_item(item: Customer):
     # Prepare the consent request payload
     consent_payload = {
@@ -109,11 +109,13 @@ async def create_item(item: Customer):
         consent_handle = response.json().get('ConsentHandle')
         
         return {
-            "message": "Customer created successfully",
+            "message": "Customer Consent Request created successfully",
+            "Mobile": item.Mobile,
             "consentHandle": consent_handle
         }
     except requests.exceptions.RequestException as e:
         return {"error": f"Failed to create consent: {str(e)}"}
 
 
+# 
 
