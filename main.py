@@ -22,7 +22,7 @@ app = FastAPI()
 
 #Consent Request API uses the customer details to create a consent request, mobile number is mandatory
 @app.post("/ConsentRequest")
-async def create_item(item: Customer):
+async def create_consent_request(item: Customer):
     # Prepare the consent request payload
     consent_payload = {
         "ver": "2.0.0",
@@ -166,10 +166,59 @@ async def get_consent_id(txnid: str,consent_handle: str ):
         
         return {
             "consentHandle": consent_handle,
-            "consentId": response_data.get('consentStatus', {}).get('id'),  # Get ID from consentStatus object
-            "consentStatus": response_data.get('consentStatus', {}).get('status')  # Get status from consentStatus object
+            "consentId": response_data.get('ConsentStatus', {}).get('id'),  # Get ID from consentStatus object
+            "consentStatus": response_data.get('ConsentStatus', {}).get('status')  # Get status from consentStatus object
         }
         
     except requests.exceptions.RequestException as e:
         return {"error": f"Failed to fetch consent ID: {str(e)}"}
+
+# POST request to fetch the consent signature using the txn_id and consent_id from /proxy/v2/Consent/fetch
+@app.post("/ConsentSignature")
+async def get_consent_signature(txnid: str, consent_id: str):
+    # Prepare the payload
+    payload = {
+        "ver": "2.0.0",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "txnid": txnid,
+        "consentId": consent_id
+    }
+
+    headers = {
+        'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',
+        'x-jws-signature': os.getenv('SANDBOX_API_SIGNATURE'),
+        'x-request-meta': os.getenv('SANDBOX_API_META'),
+        'Content-Type': 'application/json'
+    }
+
+    try:
+        response = requests.post(
+            f"{os.getenv('SANDBOX_API_URL')}/fetch",
+            json=payload,
+            headers=headers
+        )
+        
+        # Debug logging
+        print(f"Response Status: {response.status_code}")
+        print(f"Response Headers: {response.headers}")
+        print(f"Response Body: {response.text}")
+        
+        response.raise_for_status()
+        
+        response_data = response.json()
+        
+        return {
+            "ver": response_data.get('ver'),
+            "txnid": response_data.get('txnid'),
+            "consentId": response_data.get('consentId'),
+            "status": response_data.get('status'),
+            "createTimestamp": response_data.get('createTimestamp'),
+            "signedConsent": response_data.get('signedConsent'),
+            "ConsentUse": response_data.get('ConsentUse'),
+            "timestamp": response_data.get('timestamp')
+        }
+        
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Failed to fetch consent signature: {str(e)}"}
+
 
