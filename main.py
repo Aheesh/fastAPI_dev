@@ -84,7 +84,7 @@ async def create_consent_request(item: Customer):
     headers = {
         'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',  # Add Bearer token
         'x-jws-signature': os.getenv('SANDBOX_API_SIGNATURE'),
-        'x-request-meta': os.getenv('SANDBOX_API_META'),
+        'x-request-meta': os.getenv('SANDBOX_API_META_AA'),
         'Content-Type': 'application/json'
     }
 
@@ -140,7 +140,7 @@ async def get_consent_id(txnid: str,consent_handle: str ):
     headers = {
         'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',
         'x-jws-signature': os.getenv('SANDBOX_API_SIGNATURE'),
-        'x-request-meta': os.getenv('SANDBOX_API_META'),
+        'x-request-meta': os.getenv('SANDBOX_API_META_AA'),
         'Content-Type': 'application/json'
     }
 
@@ -184,7 +184,7 @@ async def get_consent_signature(txnid: str, consent_id: str):
     headers = {
         'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',
         'x-jws-signature': os.getenv('SANDBOX_API_SIGNATURE'),
-        'x-request-meta': os.getenv('SANDBOX_API_META'),
+        'x-request-meta': os.getenv('SANDBOX_API_META_AA'),
         'Content-Type': 'application/json'
     }
 
@@ -309,7 +309,7 @@ async def fetch_fi_data(request: FIRequestInput):
         headers = {
             'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',
             'x-jws-signature': os.getenv('SANDBOX_API_SIGNATURE'),
-            'x-request-meta': os.getenv('SANDBOX_API_META'),
+            'x-request-meta': os.getenv('SANDBOX_API_META_AA'),
             'Content-Type': 'application/json'
         }
 
