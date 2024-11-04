@@ -43,7 +43,7 @@ async def create_consent_request(item: Customer):
                 "type": "FIU"
             },
             "Customer": {
-                "id": "customer1@identifier2.io",
+                "id": "customer2@identifier3.io",
                 "Identifiers": [
                     {
                         "type": "MOBILE",
@@ -82,11 +82,17 @@ async def create_consent_request(item: Customer):
     }
 
     headers = {
-        'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',  # Add Bearer token
+        'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',  # Check if Bearer token is correct
         'x-jws-signature': os.getenv('SANDBOX_API_SIGNATURE'),
         'x-request-meta': os.getenv('SANDBOX_API_META_AA'),
         'Content-Type': 'application/json'
     }
+
+    # Add debug logging to see exact header values
+    print("\n=== Debug Headers ===")
+    print("Authorization:", headers['Authorization'])
+    print("x-jws-signature:", headers['x-jws-signature'])
+    print("x-request-meta:", headers['x-request-meta'])
 
     # Debug print (masking sensitive data)
     debug_headers = headers.copy()
@@ -239,58 +245,70 @@ class FIRequestInput(BaseModel):
     to_date: str | None = None    # Optional
 
 def generate_key_material():
-    """Generate KeyMaterial including ECDH key pair"""
+    """Generate KeyMaterial from locally stored keys"""
     try:
-        # Generate private key
-        private_key = x25519.X25519PrivateKey.generate()
+        # Load pre-generated keys from local file
+        with open('dhk.json', 'r') as f:
+            key_data = json.load(f)
+            
+        # Debug print
+        print("Loaded key data:", json.dumps(key_data, indent=2))
+            
+        if 'KeyMaterial' not in key_data:
+            raise KeyError("KeyMaterial not found in key data")
+        if 'DHPublicKey' not in key_data['KeyMaterial']:
+            raise KeyError("DHPublicKey not found in KeyMaterial")
         
-        # Get public key
-        public_key = private_key.public_key()
+        # Generate a new Nonce using base64
+        nonce = b64encode(os.urandom(32)).decode('utf-8')
         
-        # Serialize public key to bytes and encode as base64
-        public_bytes = public_key.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        )
-        public_b64 = b64encode(public_bytes).decode('utf-8')
+        # Update expiry to current time + 30 minutes
+        expiry = (datetime.utcnow() + timedelta(minutes=30)).isoformat() + "Z"
         
-        # Generate expiry timestamp (30 minutes from now)
-        expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
-        
-        # Create KeyMaterial structure
+        # Format KeyMaterial exactly as per the sample
         key_material = {
             "cryptoAlg": "ECDH",
             "curve": "Curve25519",
-            "params": "cipher=AES/GCM/NoPadding;KeyPairGenerator=ECDH",
+            "params": "",  # Empty string as per sample
             "DHPublicKey": {
-                "expiry": expiry.isoformat(),
-                "Parameters": "",  # Empty as per AA specification
-                "KeyValue": public_b64
+                "expiry": expiry,
+                "Parameters": "",
+                "KeyValue": key_data['KeyMaterial']['DHPublicKey']['KeyValue']  # Keep PEM format
             },
-            "Nonce": str(uuid.uuid4())
+            "Nonce": nonce
         }
         
-        return key_material, private_key
+        print("\n=== Generated KeyMaterial ===")
+        print(json.dumps(key_material, indent=2))
+        
+        return key_material, key_data['privateKey']
+        
+    except FileNotFoundError:
+        print("dhk.json file not found")
+        raise
+    except json.JSONDecodeError as e:
+        print(f"Error parsing dhk.json file: {str(e)}")
+        raise
+    except KeyError as e:
+        print(f"Missing required key in dhk.json: {str(e)}")
+        raise
     except Exception as e:
-        print(f"Error generating key material: {str(e)}")
+        print(f"Unexpected error: {str(e)}")
         raise
 
 @app.post("/FIRequest")
 async def fetch_fi_data(request: FIRequestInput):
     try:
-        # Generate key material and get private key
         key_material, private_key = generate_key_material()
         
-        # Store private key securely for later use
-        private_bytes = private_key.private_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PrivateFormat.Raw,
-            encryption_algorithm=serialization.NoEncryption()
-        )
-        # In production, store this securely instead of printing
-        print(f"Private Key (store securely): {b64encode(private_bytes).decode('utf-8')}")
+        # Store the private key and session details for later use
+        # You might want to use Redis or a similar store in production
+        session_data = {
+            "private_key": private_key,
+            "session_id": None,  # Will be filled from response
+            "key_material": key_material
+        }
         
-        # Prepare the payload
         payload = {
             "ver": "2.0.0",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -299,12 +317,15 @@ async def fetch_fi_data(request: FIRequestInput):
                 "id": request.consent_id,
                 "digitalSignature": request.digital_signature
             },
+            "KeyMaterial": key_material,
             "FIDataRange": {
-                "from": request.from_date,
-                "to": request.to_date
-            },
-            "KeyMaterial": key_material
+                "from": request.from_date or "2023-01-01T00:00:00.000Z",
+                "to": request.to_date or datetime.now(timezone.utc).isoformat()
+            }
         }
+
+        print("\n=== FIRequest Payload ===")
+        print(json.dumps(payload, indent=2))
 
         headers = {
             'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',
@@ -313,97 +334,29 @@ async def fetch_fi_data(request: FIRequestInput):
             'Content-Type': 'application/json'
         }
 
-        # Debug print (masking sensitive data)
-        debug_headers = headers.copy()
-        for key in debug_headers:
-            if debug_headers[key] and len(debug_headers[key]) > 20:
-                debug_headers[key] = debug_headers[key][:20] + "..."
-        print(f"Headers being sent: {debug_headers}")
-        print(f"URL being called: {os.getenv('SANDBOX_API_URL')}/FI/request")
-
         response = requests.post(
             f"{os.getenv('SANDBOX_API_URL')}/FI/request",
             json=payload,
             headers=headers
         )
         
-        # Debug logging
-        print(f"Response Status: {response.status_code}")
-        print(f"Response Headers: {response.headers}")
-        print(f"Response Body: {response.text}")
-        
-        response.raise_for_status()
-        
+        print(f"\n=== FIRequest Response ===")
+        print(f"Status: {response.status_code}")
+        print(f"Body: {response.text}")
+
         response_data = response.json()
         
-        # Store the session details for later use
-        session_info = {
-            "txnid": response_data.get('txnid'),
-            "sessionId": response_data.get('sessionId'),
-            "private_key": b64encode(private_bytes).decode('utf-8')
-        }
-        # In production, store this securely
-        print(f"Session Info (store securely): {session_info}")
+        # Store session_id with encryption details
+        session_data["session_id"] = response_data.get("sessionId")
         
-        return {
-            "ver": response_data.get('ver'),
-            "timestamp": response_data.get('timestamp'),
-            "txnid": response_data.get('txnid'),
-            "consentId": response_data.get('consentId'),
-            "sessionId": response_data.get('sessionId')
-        }
-        
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch FI data: {str(e)}")
+        return response_data
+
     except Exception as e:
         print(f"Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    
-    # FI Data Fetch API uses the txn_id, session_id, fipID and the linkReferenceNumber to fetch the data sample request body
-    # {
-    #     "ver": "2.0.0",
-    #     "timestamp": "2024-07-19T06:41:34.904+0000",
-    #     "txnid": "af5b8023-aabc-4a46-8f37-d3c167129b1e",
-    #     "sessionId": "2583957a-006d-438d-a6a1-3a9a90225c74",
-    #     "fipId": "IGNOSIS_FIP_SANDBOX",
-    #     "linkRefNumber": [
-    #         {
-    #             "id": "a45ab990-edce-4a71-9ec6-fbb27722701c"
-    #         }
-    #     ]
-    # }
-    # The response is the FI data in the form of a json object data contains the maskedAccountNumber, EncryptedFinancialInformation and KeyMaterial.
-    # Sample response 
-#     {
-#     "ver": "2.0.0",
-#     "timestamp": "2024-11-04T07:58:28.044Z",
-#     "txnid": "af5b8023-aabc-4a46-8f37-d3c167129b1e",
-#     "FI": [
-#         {
-#             "fipID": "IGNOSIS_FIP_SANDBOX",
-#             "data": [
-#                 {
-#                     "linkRefNumber": "a45ab990-edce-4a71-9ec6-fbb27722701c",
-#                     "maskedAccNumber": "XXXXXXX3468",
-#                     "encryptedFI": "string"
-#                 }
-#             ],
-#             "KeyMaterial": {
-#                 "cryptoAlg": "ECDH",
-#                 "curve": "Curve25519",
-#                 "params": "cipher=AES/GCM/NoPadding;KeyPairGenerator=ECDH",
-#                 "DHPublicKey": {
-#                     "expiry": "2023-07-06T11:39:57.153Z",
-#                     "Parameters": "string",
-#                     "KeyValue": "string"
-#                 },
-#                 "Nonce": "29512b70-ca84-46b5-9471-63765599cf15"
-#             }
-#         }
-#     ]
-# }
-# capture the encryptedFI , maskedand store it in the database.
+        raise HTTPException(status_code=500, detail=str(e))
+
+# FI Data Fetch API uses the txn_id, session_id, fipID and the linkReferenceNumber to fetch the data 
+# response captures the encryptedFinancial Data , masked Account data and store it in the database.
 
 class FIFetchInput(BaseModel):
     txnid: str
@@ -414,15 +367,24 @@ class FIFetchInput(BaseModel):
 @app.post("/FIFetch")
 async def fetch_fi_data_details(request: FIFetchInput):
     try:
-        # Prepare the payload
         payload = {
             "ver": "2.0.0",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "txnid": request.txnid,
             "sessionId": request.session_id,
-            "fipId": request.fip_id,
-            "linkRefNumber": [{"id": ref_num} for ref_num in request.link_ref_numbers]
+            "fipId": "FIP-SIMULATOR",
+            "linkRefNumber": [
+                {
+                    "id": ref_num,
+                    "type": "DEPOSIT"
+                } for ref_num in request.link_ref_numbers
+            ]
         }
+
+        print("\n=== FIFetch Request ===")
+        print("Session ID:", request.session_id)
+        print("Transaction ID:", request.txnid)
+        print("Payload:", json.dumps(payload, indent=2))
 
         headers = {
             'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',
@@ -436,36 +398,19 @@ async def fetch_fi_data_details(request: FIFetchInput):
             json=payload,
             headers=headers
         )
-        
-        # Debug logging
-        print(f"Response Status: {response.status_code}")
-        print(f"Response Body: {response.text}")
-        
-        response.raise_for_status()
-        response_data = response.json()
 
-        # Extract relevant data from each FI entry
-        fi_data = []
-        for fi in response_data.get('FI', []):
-            for data_entry in fi.get('data', []):
-                fi_data.append({
-                    'fip_id': fi.get('fipID'),
-                    'link_ref_number': data_entry.get('linkRefNumber'),
-                    'masked_acc_number': data_entry.get('maskedAccNumber'),
-                    'encrypted_fi': data_entry.get('encryptedFI'),
-                    'key_material': fi.get('KeyMaterial')
-                })
+        if response.status_code != 200:
+            print(f"\n=== Error Response ===")
+            print(f"Status: {response.status_code}")
+            print(f"Body: {response.text}")
+            error_detail = response.json()
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"FI fetch failed: {error_detail}"
+            )
 
-        # Here you would typically store fi_data in your database
-        # For example (pseudo-code):
-        # await db.fi_data.insert_many(fi_data)
-        
-        return {
-            "message": "FI data fetched successfully",
-            "data": fi_data
-        }
-        
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch FI data: {str(e)}")
+        return response.json()
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        print(f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
