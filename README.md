@@ -1,6 +1,6 @@
-# Account Aggregator FastAPI Application
+# Family Asset Monitoring
 
-This FastAPI application implements the Account Aggregator (AA) specification for financial data aggregation. It provides endpoints for consent management and financial information retrieval through the AA framework.
+This application implements the Account Aggregator (AA) specification for financial data aggregation. It provides endpoints for consent management and financial information retrieval through the AA framework.
 
 ## Features
 
