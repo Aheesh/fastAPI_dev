@@ -1,0 +1,3 @@
+SANDBOX_API_URL=https://api.sandbox.sahamati.org.in/proxy/v2
+SANDBOX_API_META_AA=
+SANDBOX_API_SIGNATURE=
