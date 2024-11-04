@@ -359,3 +359,113 @@ async def fetch_fi_data(request: FIRequestInput):
     except Exception as e:
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
+    # FI Data Fetch API uses the txn_id, session_id, fipID and the linkReferenceNumber to fetch the data sample request body
+    # {
+    #     "ver": "2.0.0",
+    #     "timestamp": "2024-07-19T06:41:34.904+0000",
+    #     "txnid": "af5b8023-aabc-4a46-8f37-d3c167129b1e",
+    #     "sessionId": "2583957a-006d-438d-a6a1-3a9a90225c74",
+    #     "fipId": "IGNOSIS_FIP_SANDBOX",
+    #     "linkRefNumber": [
+    #         {
+    #             "id": "a45ab990-edce-4a71-9ec6-fbb27722701c"
+    #         }
+    #     ]
+    # }
+    # The response is the FI data in the form of a json object data contains the maskedAccountNumber, EncryptedFinancialInformation and KeyMaterial.
+    # Sample response 
+#     {
+#     "ver": "2.0.0",
+#     "timestamp": "2024-11-04T07:58:28.044Z",
+#     "txnid": "af5b8023-aabc-4a46-8f37-d3c167129b1e",
+#     "FI": [
+#         {
+#             "fipID": "IGNOSIS_FIP_SANDBOX",
+#             "data": [
+#                 {
+#                     "linkRefNumber": "a45ab990-edce-4a71-9ec6-fbb27722701c",
+#                     "maskedAccNumber": "XXXXXXX3468",
+#                     "encryptedFI": "string"
+#                 }
+#             ],
+#             "KeyMaterial": {
+#                 "cryptoAlg": "ECDH",
+#                 "curve": "Curve25519",
+#                 "params": "cipher=AES/GCM/NoPadding;KeyPairGenerator=ECDH",
+#                 "DHPublicKey": {
+#                     "expiry": "2023-07-06T11:39:57.153Z",
+#                     "Parameters": "string",
+#                     "KeyValue": "string"
+#                 },
+#                 "Nonce": "29512b70-ca84-46b5-9471-63765599cf15"
+#             }
+#         }
+#     ]
+# }
+# capture the encryptedFI , maskedand store it in the database.
+
+class FIFetchInput(BaseModel):
+    txnid: str
+    session_id: str
+    fip_id: str
+    link_ref_numbers: list[str]
+
+@app.post("/FIFetch")
+async def fetch_fi_data_details(request: FIFetchInput):
+    try:
+        # Prepare the payload
+        payload = {
+            "ver": "2.0.0",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "txnid": request.txnid,
+            "sessionId": request.session_id,
+            "fipId": request.fip_id,
+            "linkRefNumber": [{"id": ref_num} for ref_num in request.link_ref_numbers]
+        }
+
+        headers = {
+            'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',
+            'x-jws-signature': os.getenv('SANDBOX_API_SIGNATURE'),
+            'x-request-meta': os.getenv('SANDBOX_API_META_AA'),
+            'Content-Type': 'application/json'
+        }
+
+        response = requests.post(
+            f"{os.getenv('SANDBOX_API_URL')}/FI/fetch",
+            json=payload,
+            headers=headers
+        )
+        
+        # Debug logging
+        print(f"Response Status: {response.status_code}")
+        print(f"Response Body: {response.text}")
+        
+        response.raise_for_status()
+        response_data = response.json()
+
+        # Extract relevant data from each FI entry
+        fi_data = []
+        for fi in response_data.get('FI', []):
+            for data_entry in fi.get('data', []):
+                fi_data.append({
+                    'fip_id': fi.get('fipID'),
+                    'link_ref_number': data_entry.get('linkRefNumber'),
+                    'masked_acc_number': data_entry.get('maskedAccNumber'),
+                    'encrypted_fi': data_entry.get('encryptedFI'),
+                    'key_material': fi.get('KeyMaterial')
+                })
+
+        # Here you would typically store fi_data in your database
+        # For example (pseudo-code):
+        # await db.fi_data.insert_many(fi_data)
+        
+        return {
+            "message": "FI data fetched successfully",
+            "data": fi_data
+        }
+        
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch FI data: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
