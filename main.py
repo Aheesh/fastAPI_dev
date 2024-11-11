@@ -9,9 +9,91 @@ import uuid
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
 from base64 import b64encode
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from base64 import b64decode
+import traceback
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 # Load environment variables
 load_dotenv()
+
+# Define FIDataProcessor class first
+class FIDataProcessor:
+    def __init__(self):
+        self.private_key = None
+        self.fiu_nonce = None
+        self.key_material = None  # Store the complete key material
+
+    async def decrypt_and_store_fi_data(self, response_data):
+        try:
+            processed_data = []
+            if 'FI' in response_data:
+                for fi in response_data['FI']:
+                    for data in fi.get('data', []):
+                        if 'encryptedFI' in data:
+                            if not self.private_key or not self.fiu_nonce or not self.key_material:
+                                raise ValueError("Private key, FIU nonce, and key material are required")
+
+                            # Prepare decrypt payload for Rahasya
+                            decrypt_payload = {
+                                "base64Data": data['encryptedFI'],
+                                "base64RemoteNonce": fi['KeyMaterial']['Nonce'],
+                                "base64YourNonce": b64encode(self.fiu_nonce).decode('utf-8'),
+                                "ourPrivateKey": {
+                                    "curve": "Curve25519",
+                                    "privateValue": self.private_key
+                                },
+                                "remoteKeyMaterial": {
+                                    "cryptoAlg": fi['KeyMaterial']['cryptoAlg'],
+                                    "curve": fi['KeyMaterial']['curve'],
+                                    "params": fi['KeyMaterial']['params'],
+                                    "DHPublicKey": {
+                                        "expiry": fi['KeyMaterial']['DHPublicKey']['expiry'],
+                                        "parameters": fi['KeyMaterial']['DHPublicKey']['Parameters'],
+                                        "keyValue": fi['KeyMaterial']['DHPublicKey']['KeyValue']
+                                    }
+                                }
+                            }
+
+                            print("\nDecryption Payload:")
+                            print(json.dumps(decrypt_payload, indent=2))
+
+                            try:
+                                decrypt_response = requests.post(
+                                    "http://localhost:8080/ecc/v1/decrypt",
+                                    json=decrypt_payload,
+                                    headers={'Content-Type': 'application/json'}
+                                )
+                                
+                                print(f"\nDecryption Response Status: {decrypt_response.status_code}")
+                                print(f"Decryption Response Body: {decrypt_response.text}")
+                                
+                                decrypt_response.raise_for_status()
+                                decrypted_data = decrypt_response.json()
+                                
+                                processed_data.append({
+                                    'maskedAccNumber': data.get('maskedAccNumber'),
+                                    'linkRefNumber': data.get('linkRefNumber'),
+                                    'decryptedData': decrypted_data
+                                })
+                            except requests.exceptions.RequestException as e:
+                                print(f"Rahasya decryption service error: {str(e)}")
+                                raise
+
+            return processed_data
+        except Exception as e:
+            print(f"Decryption error: {str(e)}")
+            traceback.print_exc()
+            raise
+
+# Then define the storage and helper function
+processor_storage = {}
+
+def store_processor_for_session(session_id: str, processor: FIDataProcessor):
+    processor_storage[session_id] = processor
 
 
 class Customer(BaseModel):
@@ -241,95 +323,57 @@ class FIRequestInput(BaseModel):
     txnid: str
     consent_id: str
     digital_signature: str
-    from_date: str | None = None  # Optional
-    to_date: str | None = None    # Optional
+    from_date: str | None = None
+    to_date: str | None = None
 
 def generate_key_material():
-    """Generate KeyMaterial from locally stored keys"""
+    """Generate key material using Rahasya service"""
     try:
-        # Load pre-generated keys from local file
-        with open('dhk.json', 'r') as f:
-            key_data = json.load(f)
-            
-        # Debug print
-        print("Loaded key data:", json.dumps(key_data, indent=2))
-            
-        if 'KeyMaterial' not in key_data:
-            raise KeyError("KeyMaterial not found in key data")
-        if 'DHPublicKey' not in key_data['KeyMaterial']:
-            raise KeyError("DHPublicKey not found in KeyMaterial")
+        # Generate key pair using Rahasya - using GET method
+        generate_key_response = requests.get(
+            "http://localhost:8080/ecc/v1/generateKey",
+            headers={'Content-Type': 'application/json'}
+        )
         
-        # Generate a new Nonce using base64
-        nonce = b64encode(os.urandom(32)).decode('utf-8')
+        print("\nKey Generation Response:")
+        print(f"Status: {generate_key_response.status_code}")
+        print(f"Body: {generate_key_response.text}")
         
-        # Update expiry to current time + 30 minutes
-        expiry = (datetime.utcnow() + timedelta(minutes=30)).isoformat() + "Z"
+        generate_key_response.raise_for_status()
+        key_data = generate_key_response.json()
         
-        # Format KeyMaterial exactly as per the sample
-        key_material = {
-            "cryptoAlg": "ECDH",
-            "curve": "Curve25519",
-            "params": "",  # Empty string as per sample
-            "DHPublicKey": {
-                "expiry": expiry,
-                "Parameters": "",
-                "KeyValue": key_data['KeyMaterial']['DHPublicKey']['KeyValue']  # Keep PEM format
-            },
-            "Nonce": nonce
-        }
+        # Extract private key and key material from the correct structure
+        private_key = key_data['privateKey']
+        key_material = key_data['KeyMaterial']  # Use the KeyMaterial object directly
         
-        print("\n=== Generated KeyMaterial ===")
-        print(json.dumps(key_material, indent=2))
+        return key_material, private_key
         
-        return key_material, key_data['privateKey']
-        
-    except FileNotFoundError:
-        print("dhk.json file not found")
-        raise
-    except json.JSONDecodeError as e:
-        print(f"Error parsing dhk.json file: {str(e)}")
-        raise
-    except KeyError as e:
-        print(f"Missing required key in dhk.json: {str(e)}")
-        raise
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
+    except requests.exceptions.RequestException as e:
+        print(f"Rahasya key generation error: {str(e)}")
         raise
 
 @app.post("/FIRequest")
-async def fetch_fi_data(request: FIRequestInput):
+async def request_financial_data(request: FIRequestInput):
     try:
+        # Generate key material using Rahasya service
         key_material, private_key = generate_key_material()
         
-        # Store the private key and session details for later use
-        # You might want to use Redis or a similar store in production
-        session_data = {
-            "private_key": private_key,
-            "session_id": None,  # Will be filled from response
-            "key_material": key_material
-        }
+        # Generate a random nonce
+        fiu_nonce = os.urandom(32)  # 32 bytes of random data
+        key_material['Nonce'] = b64encode(fiu_nonce).decode('utf-8')
         
+        # Create the request payload
         payload = {
             "ver": "2.0.0",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "txnid": request.txnid,
-            "Consent": {
-                "id": request.consent_id,
-                "digitalSignature": request.digital_signature
-            },
-            "KeyMaterial": key_material,
-            "FIDataRange": {
-                "from": request.from_date or "2023-01-01T00:00:00.000Z",
-                "to": request.to_date or datetime.now(timezone.utc).isoformat()
-            }
+            "consentId": request.consent_id,
+            "KeyMaterial": key_material
         }
-
-        print("\n=== FIRequest Payload ===")
-        print(json.dumps(payload, indent=2))
 
         headers = {
             'Authorization': f'Bearer {os.getenv("SANDBOX_API_SIGNATURE")}',
-            'x-jws-signature': os.getenv('SANDBOX_API_SIGNATURE'),
+            'x-jws-signature': request.digital_signature,
             'x-request-meta': os.getenv('SANDBOX_API_META_AA'),
             'Content-Type': 'application/json'
         }
@@ -339,21 +383,28 @@ async def fetch_fi_data(request: FIRequestInput):
             json=payload,
             headers=headers
         )
-        
-        print(f"\n=== FIRequest Response ===")
-        print(f"Status: {response.status_code}")
-        print(f"Body: {response.text}")
-
+        response.raise_for_status()
         response_data = response.json()
         
-        # Store session_id with encryption details
-        session_data["session_id"] = response_data.get("sessionId")
+        processor = FIDataProcessor()
+        processor.private_key = private_key
+        processor.fiu_nonce = fiu_nonce  # Use the generated nonce directly
+        processor.key_material = key_material
+        
+        store_processor_for_session(response_data.get("sessionId"), processor)
         
         return response_data
-
+        
     except Exception as e:
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Add this function before the FIFetch endpoint
+def get_stored_private_key(session_id: str) -> str:
+    # TODO: In production, retrieve from secure storage (Redis/Database)
+    # For demo, return hardcoded key from dhk.json
+    with open('dhk.json', 'r') as f:
+        return json.load(f)['privateKey']
 
 # FI Data Fetch API uses the txn_id, session_id, fipID and the linkReferenceNumber to fetch the data 
 # response captures the encryptedFinancial Data , masked Account data and store it in the database.
@@ -367,6 +418,14 @@ class FIFetchInput(BaseModel):
 @app.post("/FIFetch")
 async def fetch_fi_data_details(request: FIFetchInput):
     try:
+        # Retrieve the stored processor for this session
+        processor = processor_storage.get(request.session_id)
+        if not processor:
+            raise HTTPException(
+                status_code=400,
+                detail="Session not found. Please make an FI request first."
+            )
+
         payload = {
             "ver": "2.0.0",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -399,18 +458,21 @@ async def fetch_fi_data_details(request: FIFetchInput):
             headers=headers
         )
 
-        if response.status_code != 200:
-            print(f"\n=== Error Response ===")
-            print(f"Status: {response.status_code}")
-            print(f"Body: {response.text}")
-            error_detail = response.json()
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"FI fetch failed: {error_detail}"
-            )
+        # Add these debug prints
+        print("\n=== FIFetch Response ===")
+        print(f"Status: {response.status_code}")
+        print(f"Body: {response.text}")
 
-        return response.json()
-
+        response_data = response.json()
+        
+        # Use the stored processor to decrypt the data
+        processed_data = await processor.decrypt_and_store_fi_data(response_data)
+        
+        return {
+            "status": "success",
+            "message": "FI data processed successfully",
+            "data": processed_data
+        }
     except Exception as e:
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
